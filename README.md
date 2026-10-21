@@ -4,7 +4,7 @@
 
 A local macOS sleep policy and battery history app. [English quick start](Docs/README.en.md).
 
-**GUI 1.4 · 后台协议 1.3 · MIT**
+**GUI 1.4.1 · 后台协议 1.4 · MIT**
 
 [GitHub 仓库](https://github.com/onetoken-dev/SleepBridge) · [实验版下载](https://github.com/onetoken-dev/SleepBridge/releases) · [问题反馈](https://github.com/onetoken-dev/SleepBridge/issues)
 
@@ -64,7 +64,7 @@ make package                # dist/ 内生成原生架构应用 ZIP 和 SHA-256
 
 退出应用后，已启用的后台策略仍运行；分钟电量采样暂停，下次打开会补读系统保留的事件。仅关闭主窗口不会退出应用。应用不主动联网、不上传日志、不保存管理员密码。
 
-GUI 和后台协议分别版本化；GUI 1.4 能使用后台协议 1.3，单独增加统计界面不要求升级服务。
+GUI 和后台协议分别版本化；GUI 1.4.1 需要修复后的后台协议 1.4，单独增加统计界面不要求升级服务。
 
 ## 恢复
 

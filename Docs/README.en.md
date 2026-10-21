@@ -2,7 +2,7 @@
 
 SleepBridge is a local SwiftUI utility for macOS sleep policy, sleep/wake inspection, and battery history.
 
-GUI version: **1.4**. Helper protocol: **1.3**. License: **MIT**.
+GUI version: **1.4.1**. Helper protocol: **1.4**. License: **MIT**.
 
 [Repository](https://github.com/onetoken-dev/SleepBridge) · [Experimental releases](https://github.com/onetoken-dev/SleepBridge/releases)
 

@@ -24,6 +24,7 @@
 
 ```bash
 '/Library/Application Support/SleepBridge/SleepBridgeHelper' --control ping
+'/Library/Application Support/SleepBridge/SleepBridgeHelper' --control diagnose
 launchctl print system/local.sleepbridge.helper
 pmset -g custom
 pmset -g sched
@@ -59,3 +60,5 @@ sudo rm -rf '/Library/Application Support/SleepBridge'
 应用与 helper 是两个进程。替换 `.app` 不会自动替换已安装的 root helper。需要更新协议或 helper 行为时，在 GUI 使用“升级／修复后台服务”。仅统计界面更新不要求更换兼容 helper。
 
 如果 Dock 中固定的图标仍指向旧副本，从 Dock 移除旧快捷方式，再固定新构建的应用；不要为了刷新图标去修改系统安全设置。
+
+`diagnose` 只测试异步日志读取与主循环响应，不设置模式、不发起睡眠。完成后服务日志会出现“唤醒日志诊断完成”。后台等待期间不应阻断 ping 或通知。

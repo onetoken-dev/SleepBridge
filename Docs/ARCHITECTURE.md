@@ -16,6 +16,7 @@ GUI 与 helper 使用相同的配置、状态和通信类型，但分别编译�
 - `Sources/App/App.swift`：页面、管理员安装流程、服务状态、手动操作。
 - `Sources/App/HistoryView.swift`：历史范围选择、图表、区间明细和 CSV。
 - `Sources/Helper/Helper.swift`：策略状态机、CLI、主运行循环和控制连接。
+- `Sources/Helper/CommandRunner.swift`：不重入主运行循环的、有超时的 POSIX 命令执行和本轮唤醒原因解析。
 - `Sources/Helper/ScheduledWake.swift`：原生 IOPM 单次唤醒安排及取消。
 - `Sources/Shared/Shared.swift`：路径、配置、状态、策略判断、电源读取和进程工具。
 - `Sources/Shared/Control.swift`：Unix socket 地址与客户端。
@@ -24,7 +25,7 @@ GUI 与 helper 使用相同的配置、状态和通信类型，但分别编译�
 
 ## 版本
 
-应用版本在 `Resources/Info.plist`；helper 协议版本在 `Shared.swift` 的 `helperProtocolVersion`。GUI 1.4 与 helper 协议 1.3 配套。二者不需要同步增加版本号；修改协议时需同时更新服务端、客户端与兼容策略。
+应用版本在 `Resources/Info.plist`；helper 协议版本在 `Shared.swift` 的 `helperProtocolVersion`。GUI 1.4.1 与 helper 协议 1.4 配套。二者不需要同步增加版本号；修改协议时需同时更新服务端、客户端与兼容策略。
 
 ## 策略流程
 
@@ -55,3 +56,7 @@ GUI 与 helper 使用相同的配置、状态和通信类型，但分别编译�
 历史数据是当前用户的 `~/Library/Application Support/SleepBridgeHistory/history.json`。GUI 每分钟导入系统保留的事件并采集当前电量，保留 90 天。退出应用不停止后台策略，但暂停分钟采样。
 
 具体区间语义见 [HISTORY.md](HISTORY.md)，特权控制边界见 [SECURITY.md](../SECURITY.md)。
+
+## 自动检查的重入修复
+
+Foundation Process.waitUntilExit 会运行调用线程的 RunLoop。在持有操作文件锁时调用它，会让一秒定时器重入 reload，随后在同一文件锁上自锁。Helper 的命令执行不能使用该等待方式：使用有时间上限的 posix_spawn/poll/waitpid，耗时的日志读取放到工作队列，返回主线程后再校验周期 generation。主循环获取操作锁使用 LOCK_NB，忙时跳过或重新排队。

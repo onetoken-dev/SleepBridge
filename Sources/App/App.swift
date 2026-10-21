@@ -42,6 +42,7 @@ func appleString(_ value: String) -> String {
             Task { @MainActor in self?.refresh() }
         }
     }
+    var statusFresh: Bool { controlReady && Date().timeIntervalSince(status.updated) < 45 }
     var dirty: Bool { config.enabled && (minutes != config.minutes || scope != config.scope) }
     func refresh(logs: Bool = false) {
         guard !refreshing else { return }; refreshing = true
@@ -71,9 +72,6 @@ func appleString(_ value: String) -> String {
             self.running = values[3].contains("state = running")
             self.controlReady = values[6] == helperGreeting
             self.controlDetail = values[6]
-            if !self.controlReady && self.status.deepCycle {
-                self.message = "休眠请求后后台未响应；该状态尚未确认，请查看系统日志。"
-            }
             self.config = readJSON(configPath, as: Configuration.self) ?? Configuration()
             self.status = readJSON(statusPath, as: ServiceStatus.self) ?? ServiceStatus()
             self.events =
@@ -133,6 +131,15 @@ func appleString(_ value: String) -> String {
             + shellQuote("/Library/LaunchDaemons/" + serviceID + ".plist") + "\n"
         script += shellQuote(installedHelper) + " --configure \(delay) \(targetScope) \(getuid())\n"
         privileged(script, success: "后台服务和策略已更新。日常请求硬盘休眠无需重复输入管理员密码。")
+    }
+    func diagnose() {
+        guard !busy else { return }
+        busy = true
+        Task {
+            let result = await Task.detached { connectControl("diagnose") }.value
+            busy = false; error = result.code != 0; message = result.output
+            refresh(logs: true)
+        }
     }
     func disable() {
         privileged(shellQuote(installedHelper) + " --disable", success: "已停用策略并恢复启用前的休眠模式。")
@@ -315,9 +322,17 @@ struct ContentView: View {
                         )
                         .foregroundStyle(.secondary)
                         if model.config.enabled {
-                            Text(model.status.detail).font(.callout).foregroundStyle(.secondary)
+                            Text(
+                                model.statusFresh
+                                    ? model.status.detail
+                                    : "后台状态暂不可确认；最后记录于 "
+                                        + model.status.updated.formatted(
+                                            date: .abbreviated, time: .standard)
+                            ).font(.callout).foregroundStyle(.secondary)
                         }
-                        if let date = model.status.scheduledWake, model.config.enabled {
+                        if let date = model.status.scheduledWake, model.config.enabled,
+                            model.statusFresh, date > Date()
+                        {
                             Text("计划转换：\(date.formatted(date: .abbreviated, time: .standard))")
                                 .font(.callout.monospacedDigit())
                         }
@@ -326,7 +341,8 @@ struct ContentView: View {
                 }
                 if model.config.enabled && !model.controlReady {
                     HStack {
-                        Text("控制接口无响应，不能据此判断版本；请查看后台服务诊断。").font(.callout).foregroundStyle(.orange);
+                        Text("控制接口未就绪或协议不兼容。1.4.1 修复了自动唤醒检查的死锁；请安装后台修复。").font(.callout)
+                            .foregroundStyle(.orange);
                         Button("升级后台服务") { model.apply(repair: true) }.disabled(model.busy)
                     }
                 }
@@ -466,6 +482,8 @@ struct ContentView: View {
                 LabeledContent(
                     "免重复密码控制",
                     value: model.controlReady ? "已就绪（\(helperProtocolVersion)）" : "控制接口未就绪")
+                Button("诊断唤醒日志（不休眠）") { model.diagnose() }.disabled(
+                    !model.controlReady || model.busy)
                 if !model.controlReady {
                     Text(model.controlDetail).font(.caption).foregroundStyle(.orange).textSelection(
                         .enabled)

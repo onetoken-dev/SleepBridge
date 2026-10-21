@@ -5,13 +5,15 @@ cd "$ROOT"
 BIN="$ROOT/.build/tests"
 mkdir -p "$BIN"
 COMMON=(-swift-version 5 -target "$(uname -m)-apple-macos14.0")
-xcrun swiftc "${COMMON[@]}" Sources/Shared/{Shared,Control,Spawn}.swift Sources/Helper/{ScheduledWake,Helper}.swift -o "$BIN/Helper" -framework IOKit
+xcrun swiftc "${COMMON[@]}" Sources/Shared/{Shared,Control,Spawn}.swift Sources/Helper/{CommandRunner,ScheduledWake,Helper}.swift -o "$BIN/Helper" -framework IOKit
 "$BIN/Helper" --self-test
 xcrun swiftc "${COMMON[@]}" Sources/Shared/{Shared,Control}.swift Tests/ControlTests.swift -o "$BIN/ControlTests" -framework IOKit
 "$BIN/ControlTests"
 xcrun swiftc "${COMMON[@]}" Sources/Shared/Shared.swift Sources/History/History.swift Tests/HistoryTests.swift -o "$BIN/HistoryTests" -framework IOKit
 "$BIN/HistoryTests"
-xcrun swiftc "${COMMON[@]}" -D SLEEPBRIDGE_TESTING Sources/Shared/{Shared,Control,Spawn}.swift Sources/Helper/{ScheduledWake,Helper}.swift Tests/HelperRegressionTests.swift -o "$BIN/HelperRegressionTests" -framework IOKit
+xcrun swiftc "${COMMON[@]}" Sources/Shared/Shared.swift Sources/Helper/CommandRunner.swift Tests/CommandRunnerTests.swift -o "$BIN/CommandRunnerTests" -framework IOKit
+"$BIN/CommandRunnerTests"
+xcrun swiftc "${COMMON[@]}" -D SLEEPBRIDGE_TESTING Sources/Shared/{Shared,Control,Spawn}.swift Sources/Helper/{CommandRunner,ScheduledWake,Helper}.swift Tests/HelperRegressionTests.swift -o "$BIN/HelperRegressionTests" -framework IOKit
 TEST_DIR="$(mktemp -d /tmp/sleepbridge-tests-XXXXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 "$BIN/HelperRegressionTests" "$TEST_DIR"

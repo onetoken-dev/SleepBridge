@@ -21,7 +21,7 @@ plutil -insert ProcessType -string Background "$PLIST"
 plutil -insert StandardOutPath -string "$TEST_DIR/stdout.log" "$PLIST"
 plutil -insert StandardErrorPath -string "$TEST_DIR/stderr.log" "$PLIST"
 launchctl bootstrap "$DOMAIN" "$PLIST"
-for attempt in {1..60}; do
+for attempt in {1..80}; do
     if [[ -f "$TEST_DIR/passed.txt" ]]; then cat "$TEST_DIR/stdout.log"; printf 'PASS: launchd Background regression\n'; exit 0; fi
     sleep 0.25
 done

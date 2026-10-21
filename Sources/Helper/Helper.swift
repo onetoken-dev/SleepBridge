@@ -27,7 +27,7 @@ func checkedPM(_ args: [String]) throws {
     #if SLEEPBRIDGE_TESTING
         TestPowerEffects.commands.append(args)
     #else
-        let result = run("/usr/bin/pmset", args)
+        let result = runHelperCommand("/usr/bin/pmset", args, timeout: 2)
         if result.code != 0 {
             throw NSError(
                 domain: "SleepBridge", code: Int(result.code),
@@ -36,10 +36,20 @@ func checkedPM(_ args: [String]) throws {
     #endif
 }
 func locked<T>(_ action: () throws -> T) rethrows -> T {
-    let fd = open(supportPath + "/operation.lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
+    let fd = open(supportPath + "/operation.lock", O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
     guard fd >= 0 else { fatalError("无法取得服务锁") }
     flock(fd, LOCK_EX); defer { flock(fd, LOCK_UN); close(fd) }
     return try action()
+}
+/// Main-loop handlers skip busy CLI locks instead of blocking power notifications.
+@discardableResult func serviceLocked(_ action: () -> Void) -> Bool {
+    let fd = open(supportPath + "/operation.lock", O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
+    guard fd >= 0 else { return false }
+    defer { close(fd) }
+    guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { return false }
+    defer { flock(fd, LOCK_UN) }
+    action()
+    return true
 }
 func cancelWake(_ status: inout ServiceStatus) {
     if let date = status.scheduledWake {
@@ -69,12 +79,70 @@ final class Supervisor {
     var controlFD: Int32 = -1
     var lastHeartbeat = Date.distantPast
     var sleepPID: pid_t = 0
+    let wakeReader = OperationQueue()
+    var wakeCheckDelay: TimeInterval = 25
+    init() {
+        wakeReader.maxConcurrentOperationCount = 1; wakeReader.qualityOfService = .userInitiated
+    }
+    func readWakeLog() -> CommandResult {
+        #if SLEEPBRIDGE_TESTING
+            return TestPowerEffects.readWakeLog()
+        #else
+            return runHelperCommand("/usr/bin/pmset", ["-g", "log"], timeout: 10)
+        #endif
+    }
+    func checkWake(start: Date, token: Int, diagnostic: Bool = false) {
+        guard diagnostic || generation == token else { return }
+        wakeReader.addOperation { [weak self] in
+            guard let self else { return }
+            let result = self.readWakeLog()
+            let evidence =
+                result.code == 0 ? latestWakeEvidence(result.output, notBefore: start) : nil
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if diagnostic {
+                    record(result.code == 0 ? "唤醒日志诊断完成，后台保持响应；未发起睡眠" : "日志诊断失败：" + result.output)
+                    return
+                }
+                self.completeWakeCheck(start: start, token: token, evidence: evidence)
+            }
+        }
+    }
+    func completeWakeCheck(start: Date, token: Int, evidence: WakeEvidence?) {
+        guard config.enabled, generation == token else { return }
+        let acquired = serviceLocked {
+            synchronizeConfig()
+            guard config.enabled, generation == token else { return }
+            let result: String
+            if evidence == nil {
+                result = "unknown-wake"
+            } else if evidence!.userInitiated {
+                result = "user-wake"
+            } else {
+                result = decision(
+                    elapsed: Date().timeIntervalSince(start), delay: Double(config.minutes * 60),
+                    idle: idleSeconds(), battery: onBattery(), scope: config.scope)
+            }
+            cancelWake(&status)
+            if result == "hibernate" {
+                beginHibernate()
+            } else {
+                save("策略已就绪", "检测到用户活动、电源变化或无法确认空闲，跳过转换")
+                record("为避免打断使用，跳过转换：\(result)")
+            }
+        }
+        if !acquired {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.completeWakeCheck(start: start, token: token, evidence: evidence)
+            }
+        }
+    }
     func save(_ phase: String, _ detail: String = "") {
         status.phase = phase; status.detail = detail; status.updated = Date(); status.pid = getpid()
         try? writeJSON(status, to: statusPath)
     }
     func reload() {
-        locked {
+        serviceLocked {
             guard var next = readJSON(configPath, as: Configuration.self) else { return }
             if next.revision != config.revision {
                 generation += 1
@@ -119,7 +187,7 @@ final class Supervisor {
         }
     }
     func didWake() {
-        locked {
+        serviceLocked {
             synchronizeConfig()
             guard config.enabled else { return }
             generation += 1
@@ -141,36 +209,8 @@ final class Supervisor {
                 record("提前唤醒／电源范围变化，取消本轮转换"); return
             }
             save("唤醒后检查中", "等待 25 秒，检测键盘与鼠标活动")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self] in
-                guard let self = self, self.generation == token else { return }
-                locked {
-                    self.synchronizeConfig()
-                    guard self.config.enabled, self.generation == token else { return }
-                    let wakeLine =
-                        run("/usr/bin/pmset", ["-g", "log"]).output.components(
-                            separatedBy: .newlines
-                        ).last {
-                            $0.range(of: #"\bWake\s+Wake from"#, options: .regularExpression) != nil
-                        }?.lowercased() ?? ""
-                    let userWake = [
-                        "due to lid", "due to trackpad", "due to keyboard", "due to pwrbutton",
-                        "useractivity", "lidopen",
-                    ].contains { wakeLine.contains($0) }
-                    let result =
-                        userWake
-                        ? "user-wake"
-                        : decision(
-                            elapsed: Date().timeIntervalSince(start),
-                            delay: Double(self.config.minutes * 60), idle: idleSeconds(),
-                            battery: onBattery(), scope: self.config.scope)
-                    cancelWake(&self.status)
-                    if result == "hibernate" {
-                        self.beginHibernate()
-                    } else {
-                        self.save("策略已就绪", "检测到用户活动、电源变化或无法确认空闲，跳过转换");
-                        record("为避免打断使用，跳过转换：\(result)")
-                    }
-                }
+            DispatchQueue.main.asyncAfter(deadline: .now() + wakeCheckDelay) { [weak self] in
+                self?.checkWake(start: start, token: token)
             }
         }
     }
@@ -194,7 +234,7 @@ final class Supervisor {
                 guard let self = self, self.generation == token, self.status.deepCycle else {
                     return
                 }
-                locked {
+                serviceLocked {
                     self.status.deepCycle = false
                     do {
                         try applyRAM(self.config); self.save("休眠请求未确认", "已恢复模式 3；请检查阻止睡眠的进程")
@@ -223,6 +263,7 @@ final class Supervisor {
         }
         controlFD = fd
         _ = fcntl(fd, F_SETFL, O_NONBLOCK)
+        _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
         record("本地控制监听已就绪（主运行循环）")
     }
     func pollControl() {
@@ -246,8 +287,9 @@ final class Supervisor {
             var bytes = [UInt8](repeating: 0, count: 64)
             let count = read(peer, &bytes, bytes.count)
             let command = count > 0 ? String(decoding: bytes.prefix(count), as: UTF8.self) : ""
-            var response = "ERR 未授权的本机用户"
-            locked {
+            var response = "ERR 服务正忙，请稍后重试"
+            serviceLocked {
+                response = "ERR 未授权的本机用户"
                 if authenticated, var current = readJSON(configPath, as: Configuration.self),
                     current.authorizedUID == uid
                 {
@@ -262,6 +304,11 @@ final class Supervisor {
                                 try writeJSON(current, to: configPath); response = "OK 请求已交给后台服务"
                             } catch { response = "ERR " + error.localizedDescription }
                         }
+                    } else if command == "diagnose" {
+                        checkWake(
+                            start: Date().addingTimeInterval(-86400), token: generation,
+                            diagnostic: true)
+                        response = "OK 唤醒日志诊断已启动；不会触发休眠"
                     } else {
                         response = "ERR 策略未启用或请求无效"
                     }
@@ -272,7 +319,7 @@ final class Supervisor {
             close(peer)
         }
         if Date().timeIntervalSince(lastHeartbeat) >= 15 {
-            locked {
+            serviceLocked {
                 status.updated = Date(); status.pid = getpid();
                 try? writeJSON(status, to: statusPath)
             }
@@ -295,7 +342,7 @@ final class Supervisor {
     func start() {
         config = readJSON(configPath, as: Configuration.self) ?? Configuration()
         status = readJSON(statusPath, as: ServiceStatus.self) ?? ServiceStatus()
-        locked {
+        serviceLocked {
             cancelWake(&status); status.deepCycle = false
             if config.enabled {
                 do { try applyRAM(config) } catch {
@@ -372,7 +419,9 @@ final class Supervisor {
                 if let p = p { IONotificationPortDestroy(p) }
                 return
             }
-            if args.count == 2, args[0] == "--control", ["ping", "hibernate"].contains(args[1]) {
+            if args.count == 2, args[0] == "--control",
+                ["ping", "hibernate", "diagnose"].contains(args[1])
+            {
                 let result = connectControl(args[1]); print(result.output); exit(result.code)
             }
             guard getuid() == 0 else { fputs("需要管理员权限\n", stderr); exit(1) }
@@ -387,7 +436,7 @@ final class Supervisor {
                     {
                         if config.original.isEmpty {
                             config.original = modes(
-                                from: run("/usr/bin/pmset", ["-g", "custom"]).output)
+                                from: runHelperCommand("/usr/bin/pmset", ["-g", "custom"]).output)
                             guard config.original["battery"] != nil, config.original["ac"] != nil
                             else {
                                 throw NSError(

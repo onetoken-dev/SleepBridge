@@ -16,7 +16,7 @@ let serviceID = "local.sleepbridge.helper"
 #else
     let supportPath = "/Library/Application Support/SleepBridge"
 #endif
-let helperProtocolVersion = "1.3"
+let helperProtocolVersion = "1.4"
 let helperGreeting = "OK SleepBridge \(helperProtocolVersion)"
 let installedHelper = supportPath + "/SleepBridgeHelper"
 let configPath = supportPath + "/config.json"

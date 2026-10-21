@@ -1,0 +1,17 @@
+.DS_Store
+.build/
+build/
+dist/
+*.log
+*.sock
+*.dSYM/
+*.xcuserstate
+xcuserdata/
+.env
+.env.*
+*.p12
+*.mobileprovision
+*.key
+history.json
+config.json
+status.json

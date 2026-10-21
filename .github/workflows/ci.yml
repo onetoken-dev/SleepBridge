@@ -1,0 +1,21 @@
+name: macOS build and tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-test:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: xcrun swiftc --version
+      - name: Automated tests (no real sleep)
+        run: ./Scripts/test.sh
+      - name: Build and verify app bundle
+        run: ./build.sh
+      - name: Check source formatting
+        run: ./Scripts/format.sh --check

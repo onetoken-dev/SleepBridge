@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.2 — Lid-closed DarkWake transition
+
+- 监听 powerd 的动态能力状态，并每秒补查；不再仅依赖完整唤醒通知。
+- 合盖、达到阈值、CPU 已唤醒且图形未唤醒时，立即设置模式 25，随系统自然回睡；不等待 25 秒，不调用 sleepnow。
+- 保留开盖完整唤醒的活动保护；未知能力、未知合盖状态、接电及未到期不转换。
+- 操作锁忙时保留待执行周期，恢复模式时也会重试；重复通知不会重复转换。
+- 服务页显示后台唤醒监听状态；补齐 DarkWake to FullWake 的原因解析。
+- GUI 1.4.2、helper 协议 1.5；需要更新系统后台。新增隔离 DarkWake 回归，真实合盖恢复仍需实机验证，不能从请求成功推断节电效果。
+
 ## 1.4.1 — Automatic wake-check deadlock fix
 
 - 修复到期唤醒检查中 Foundation waitUntilExit 重入定时器、重复等待自身 flock 的死锁。

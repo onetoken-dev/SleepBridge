@@ -341,7 +341,7 @@ struct ContentView: View {
                 }
                 if model.config.enabled && !model.controlReady {
                     HStack {
-                        Text("控制接口未就绪或协议不兼容。1.4.1 修复了自动唤醒检查的死锁；请安装后台修复。").font(.callout)
+                        Text("控制接口未就绪或协议不兼容。1.4.2 增加合盖后台唤醒转换；请安装新版后台。").font(.callout)
                             .foregroundStyle(.orange);
                         Button("升级后台服务") { model.apply(repair: true) }.disabled(model.busy)
                     }
@@ -422,7 +422,7 @@ struct ContentView: View {
                     step("internaldrive", "请求硬盘休眠", "模式 25，再次睡眠")
                 }
                 Text(
-                    "M1 未提供可验证的原生延迟参数。本工具通过定时唤醒尝试转换，可能短暂亮屏，也可能因合盖、电源限制或系统调度而延迟／不执行。唤醒后会等待 25 秒；检测到近期输入或无法确认空闲时会跳过，避免打断使用。系统自身也可能更早进入深度休眠。"
+                    "本工具通过定时唤醒尝试转换。合盖且处于后台唤醒时，到期立即设置下一次睡眠为模式 25，让系统自然回睡；开盖完整唤醒时等待 25 秒检查活动。系统调度可能使转换延迟，实际休眠方式须在恢复后核对系统日志。"
                 ).font(.callout).foregroundStyle(.secondary)
                 Toggle("我了解定时唤醒方式及其限制，允许启用后台策略", isOn: $model.consent).toggleStyle(.checkbox)
             }
@@ -479,6 +479,10 @@ struct ContentView: View {
                 LabeledContent("安装", value: model.installed ? "已安装" : "未安装")
                 LabeledContent("运行", value: model.running ? "运行中" : "未运行")
                 LabeledContent("策略", value: model.config.enabled ? "已启用" : "已停用")
+                LabeledContent(
+                    "合盖后台唤醒监听",
+                    value: model.controlReady && model.status.darkWakeMonitoring == true
+                        ? "已就绪" : "未确认，请升级或查看诊断")
                 LabeledContent(
                     "免重复密码控制",
                     value: model.controlReady ? "已就绪（\(helperProtocolVersion)）" : "控制接口未就绪")

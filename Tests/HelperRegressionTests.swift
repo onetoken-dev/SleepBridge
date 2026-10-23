@@ -7,11 +7,15 @@ enum TestPowerEffects {
     static var commands: [[String]] = []
     static var acknowledgments: [UInt32] = []
     static var scheduled: [Date] = []
+    static var power = PowerSnapshot(capabilities: 31, lidClosed: false)
+    static var battery = true
+    static var sleepRequests = 0
     static func readWakeLog() -> CommandResult {
         runHelperCommand("/bin/sleep", ["1.4"], timeout: 3)
     }
     static func spawnSleepRequest() throws -> pid_t {
-        try spawnDetached("/bin/sleep", arguments: ["2"])
+        sleepRequests += 1
+        return try spawnDetached("/bin/sleep", arguments: ["2"])
     }
 }
 
@@ -89,9 +93,10 @@ enum TestPowerEffects {
                 supervisor.status.phase == "内存睡眠计时中",
                 "A stale log result must not overwrite a new sleep cycle")
             precondition(supervisor.status.scheduledWake != nil)
+            checkDarkWake(supervisor)
             try! Data("PASS\n".utf8).write(to: URL(fileURLWithPath: directory + "/passed.txt"))
             print(
-                "PASS: manual and delayed automatic wake paths, responsive IPC during log reads, busy-lock skips, notification ACKs, stale-result cancellation and mode restore"
+                "PASS: manual and delayed wake paths, responsive IPC, busy locks, ACKs, stale-result cancellation; dark-only wake without full-wake notification, scope/lid/unknown/early guards, no forced sleep, idempotence and mode restore"
             )
             CFRunLoopStop(CFRunLoopGetMain())
         }
@@ -100,6 +105,57 @@ enum TestPowerEffects {
             exit(1)
         }
         supervisor.start()
+    }
+
+    static func checkDarkWake(_ supervisor: Supervisor) {
+        let requests = TestPowerEffects.sleepRequests
+        let commands = TestPowerEffects.commands.count
+        supervisor.config.minutes = 1
+        supervisor.config.scope = "battery"
+        try! writeJSON(supervisor.config, to: configPath)
+        supervisor.status.sleepStart = Date().addingTimeInterval(-30)
+        TestPowerEffects.power = PowerSnapshot(capabilities: 25, lidClosed: true)
+        supervisor.pollPowerState()
+        precondition(TestPowerEffects.commands.count == commands, "Early dark wake must wait")
+        supervisor.status.sleepStart = Date().addingTimeInterval(-70)
+        TestPowerEffects.power = PowerSnapshot(capabilities: nil, lidClosed: true)
+        supervisor.pollPowerState()
+        TestPowerEffects.power = PowerSnapshot(capabilities: 25, lidClosed: nil)
+        supervisor.pollPowerState()
+        TestPowerEffects.power = PowerSnapshot(capabilities: 25, lidClosed: false)
+        supervisor.pollPowerState()
+        TestPowerEffects.power = PowerSnapshot(capabilities: 25, lidClosed: true)
+        TestPowerEffects.battery = false
+        supervisor.pollPowerState()
+        precondition(TestPowerEffects.commands.count == commands, "Unknown/open-lid/AC must skip")
+        TestPowerEffects.battery = true
+        locked { supervisor.pollPowerState() }
+        precondition(!supervisor.status.deepCycle, "A busy lock must leave the cycle for retry")
+
+        // Crucially, NO kIOMessageSystemHasPoweredOn is delivered. The production
+        // dynamic-store callback/timer entry must work inside an eight-second wake.
+        let start = Date()
+        supervisor.pollPowerState()
+        precondition(Date().timeIntervalSince(start) < 1)
+        precondition(supervisor.status.deepCycle)
+        precondition(supervisor.status.sleepStart == nil)
+        precondition(TestPowerEffects.commands.last == ["-b", "hibernatemode", "25"])
+        precondition(
+            TestPowerEffects.sleepRequests == requests, "Dark wake must not force sleepnow")
+        supervisor.pollPowerState()
+        precondition(
+            TestPowerEffects.commands.count == commands + 1, "Repeated dark ticks are idempotent")
+        TestPowerEffects.power = PowerSnapshot(capabilities: 0, lidClosed: true)
+        supervisor.pollPowerState()
+        precondition(supervisor.status.deepCycle, "Natural return to sleep must retain mode 25")
+        precondition(!supervisor.darkWakeRequested)
+        TestPowerEffects.power = PowerSnapshot(capabilities: 31, lidClosed: false)
+        locked { supervisor.pollPowerState() }
+        precondition(supervisor.status.deepCycle, "A busy wake lock must retry restoration")
+        supervisor.pollPowerState()
+        precondition(!supervisor.status.deepCycle)
+        precondition(TestPowerEffects.commands.last == ["-b", "hibernatemode", "3"])
+        precondition(TestPowerEffects.sleepRequests == requests)
     }
 }
 

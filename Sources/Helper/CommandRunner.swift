@@ -72,7 +72,7 @@ struct WakeEvidence {
 }
 func latestWakeEvidence(_ log: String, notBefore: Date) -> WakeEvidence? {
     let pattern =
-        #"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})\s+(?:Wake|DarkWake)\s+((?:Dark)?Wake from.*)$"#
+        #"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})\s+(?:Wake|DarkWake)\s+((?:(?:Dark)?Wake from|DarkWake to FullWake from).*)$"#
     let regex = try! NSRegularExpression(pattern: pattern)
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")

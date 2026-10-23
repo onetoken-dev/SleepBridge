@@ -79,10 +79,69 @@ final class Supervisor {
     var controlFD: Int32 = -1
     var lastHeartbeat = Date.distantPast
     var sleepPID: pid_t = 0
+    var powerMonitor: PowerMonitor?
+    var lastCapabilities: UInt32?
+    var pendingFullWake = false
+    var monitorSubscribed = false
+    var darkWakeRequested = false
     let wakeReader = OperationQueue()
     var wakeCheckDelay: TimeInterval = 25
     init() {
         wakeReader.maxConcurrentOperationCount = 1; wakeReader.qualityOfService = .userInitiated
+    }
+    /// Also runs on the one-second timer, so a coalesced store notification cannot
+    /// strand a due cycle. No log subprocess or 25-second delay on this path.
+    func pollPowerState() {
+        let snapshot = powerSnapshot()
+        let previous = lastCapabilities
+        lastCapabilities = snapshot.capabilities
+        if status.darkWakeMonitoring != nil {
+            status.darkWakeMonitoring = monitorSubscribed && snapshot.capabilities != nil
+        }
+        if snapshot.full, pendingFullWake || (previous.map { $0 & 3 != 3 } ?? false) {
+            pendingFullWake = !didWake()
+            return
+        }
+        if !snapshot.full { pendingFullWake = false }
+        if snapshot.capabilities == 0, darkWakeRequested {
+            darkWakeRequested = false
+            save("已请求硬盘休眠", "系统已结束后台唤醒；实际恢复方式须在唤醒后核对日志")
+            record("后台唤醒结束；模式 25 请求保留，等待下次恢复确认")
+        }
+        guard snapshot.dark, snapshot.lidClosed == true, config.enabled, !status.deepCycle,
+            let start = status.sleepStart,
+            Date().timeIntervalSince(start) >= Double(config.minutes * 60)
+        else { return }
+        _ = serviceLocked {
+            synchronizeConfig()
+            // Re-read after taking the lock: the lid, supply or capabilities may
+            // have changed while the notification was queued.
+            let current = powerSnapshot()
+            guard config.enabled, !status.deepCycle, status.sleepStart == start,
+                current.dark, current.lidClosed == true,
+                Date().timeIntervalSince(start) >= Double(config.minutes * 60),
+                config.scope == "all" || onBattery()
+            else { return }
+            generation += 1
+            do {
+                try checkedPM([config.scope == "all" ? "-a" : "-b", "hibernatemode", "25"])
+                // Do not issue sleepnow in DarkWake: the lid-closed system already
+                // returns to sleep. Setting its next sleep mode avoids forced
+                // full wake and does not interrupt a user opening the lid.
+                status.deepCycle = true; darkWakeRequested = true
+                cancelWake(&status)
+                save("后台唤醒转换已请求", "合盖且已达阈值：模式 25 随系统下一次睡眠生效；等待恢复日志确认")
+                record("合盖后台唤醒达到阈值；设置 hibernatemode 25，等待系统自然回睡（未调用 sleepnow）")
+            } catch {
+                status.deepCycle = false; darkWakeRequested = false
+                try? applyRAM(config)
+                cancelWake(&status)
+                save("后台唤醒转换失败", error.localizedDescription)
+                record("后台唤醒转换失败：\(error.localizedDescription)")
+            }
+        }
+        // A busy lock leaves the cycle intact; the next timer tick retries with
+        // fresh capabilities instead of forcing sleep using stale evidence.
     }
     func readWakeLog() -> CommandResult {
         #if SLEEPBRIDGE_TESTING
@@ -147,7 +206,8 @@ final class Supervisor {
             if next.revision != config.revision {
                 generation += 1
                 // CLI has already applied or restored the settings. Never restore stale values here.
-                cancelWake(&status); status.deepCycle = false; config = next
+                cancelWake(&status); status.deepCycle = false; darkWakeRequested = false;
+                config = next
                 save(config.enabled ? "策略已就绪" : "已停用", config.enabled ? "等待下一次系统睡眠" : "原休眠模式已恢复")
             }
             if next.request == "hibernate" && next.enabled {
@@ -160,7 +220,8 @@ final class Supervisor {
         if let latest = readJSON(configPath, as: Configuration.self),
             latest.revision != config.revision
         {
-            generation += 1; cancelWake(&status); status.deepCycle = false; config = latest
+            generation += 1; cancelWake(&status); status.deepCycle = false;
+            darkWakeRequested = false; config = latest
         }
     }
     func willSleep() {
@@ -186,14 +247,14 @@ final class Supervisor {
             save("定时唤醒失败", error.localizedDescription); record("安排失败：\(error.localizedDescription)")
         }
     }
-    func didWake() {
-        serviceLocked {
+    @discardableResult func didWake() -> Bool {
+        return serviceLocked {
             synchronizeConfig()
             guard config.enabled else { return }
             generation += 1
             let token = generation
             if status.deepCycle {
-                status.deepCycle = false; cancelWake(&status)
+                status.deepCycle = false; darkWakeRequested = false; cancelWake(&status)
                 do { try applyRAM(config); save("策略已就绪", "已从休眠唤醒，恢复下一次内存睡眠") } catch {
                     save("恢复失败", error.localizedDescription)
                 }
@@ -367,8 +428,22 @@ final class Supervisor {
                 CFRunLoopGetMain(), IONotificationPortGetRunLoopSource(port).takeUnretainedValue(),
                 .commonModes)
         #endif
+        #if !SLEEPBRIDGE_TESTING
+            powerMonitor = PowerMonitor { [weak self] in self?.pollPowerState() }
+            let watching = powerMonitor?.start() == true
+            monitorSubscribed = watching
+            lastCapabilities = powerSnapshot().capabilities
+            status.darkWakeMonitoring = watching && lastCapabilities != nil
+            record(
+                status.darkWakeMonitoring == true
+                    ? "后台唤醒能力监听已就绪（动态状态＋每秒补查）"
+                    : "后台唤醒能力监听不可用；合盖自动转换无法保证，请查看服务诊断")
+            if status.darkWakeMonitoring != true {
+                save("后台唤醒监测不可用", "无法读取或订阅系统能力；合盖定时转换不能保证")
+            }
+        #endif
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            self?.pollControl(); self?.reload()
+            self?.pollControl(); self?.reload(); self?.pollPowerState()
         }
         startControlServer()
         record("后台监控已启动，PID \(getpid())")
@@ -414,6 +489,10 @@ final class Supervisor {
                 let root = IORegisterForSystemPower(nil, &p, { _, _, _, _ in }, &n)
                 print(
                     "IOKit registration: \(root != 0 ? "OK" : "FAILED"); battery: \(onBattery()); HID idle: \(idleSeconds().map { String(format: "%.1f s", $0) } ?? "unknown")"
+                )
+                let power = powerSnapshot()
+                print(
+                    "Power capabilities: \(power.capabilities.map(String.init) ?? "unknown"); lid closed: \(power.lidClosed.map(String.init) ?? "unknown")"
                 )
                 if root != 0 { IODeregisterForSystemPower(&n); IOServiceClose(root) };
                 if let p = p { IONotificationPortDestroy(p) }

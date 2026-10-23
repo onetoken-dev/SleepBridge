@@ -29,6 +29,10 @@ import Foundation
             latestWakeEvidence(old + "\n" + dark, notBefore: start)?.userInitiated == false)
         precondition(
             latestWakeEvidence(dark + "\n" + user, notBefore: start)?.userInitiated == true)
+        let promotion =
+            "2024-01-01 10:00:10 +0800 Wake DarkWake to FullWake from Deep Idle : due to HID Activity Using BATT"
+        precondition(
+            latestWakeEvidence(dark + "\n" + promotion, notBefore: start)?.userInitiated == true)
         precondition(
             latestWakeEvidence("2024-01-01 10:00:10 +0800 Wake Requests rtc", notBefore: start)
                 == nil)

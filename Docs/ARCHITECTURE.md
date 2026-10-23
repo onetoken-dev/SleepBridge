@@ -18,6 +18,7 @@ GUI 与 helper 使用相同的配置、状态和通信类型，但分别编译�
 - `Sources/Helper/Helper.swift`：策略状态机、CLI、主运行循环和控制连接。
 - `Sources/Helper/CommandRunner.swift`：不重入主运行循环的、有超时的 POSIX 命令执行和本轮唤醒原因解析。
 - `Sources/Helper/ScheduledWake.swift`：原生 IOPM 单次唤醒安排及取消。
+- `Sources/Helper/PowerMonitor.swift`：SystemConfiguration 动态能力状态监听、能力与合盖读取。
 - `Sources/Shared/Shared.swift`：路径、配置、状态、策略判断、电源读取和进程工具。
 - `Sources/Shared/Control.swift`：Unix socket 地址与客户端。
 - `Sources/Shared/Spawn.swift`：非阻塞子进程启动。
@@ -25,18 +26,26 @@ GUI 与 helper 使用相同的配置、状态和通信类型，但分别编译�
 
 ## 版本
 
-应用版本在 `Resources/Info.plist`；helper 协议版本在 `Shared.swift` 的 `helperProtocolVersion`。GUI 1.4.1 与 helper 协议 1.4 配套。二者不需要同步增加版本号；修改协议时需同时更新服务端、客户端与兼容策略。
+应用版本在 `Resources/Info.plist`；helper 协议版本在 `Shared.swift` 的 `helperProtocolVersion`。GUI 1.4.2 与 helper 协议 1.5 配套。二者不需要同步增加版本号；修改协议时需同时更新服务端、客户端与兼容策略。
 
 ## 策略流程
 
 1. 管理员 CLI 先备份电池与接电源的 `hibernatemode`，再应用范围内的模式 3。
 2. 收到系统将睡眠的 IOKit 通知后，记录睡眠开始并安排本工具自己的单次唤醒。
 3. 提前唤醒或切换到不适用的供电状态，取消本轮转换。
-4. 达到阈值后，等待 25 秒，再检查 HID 空闲状态和用户唤醒线索。无法确认空闲、空闲少于 30 秒或检测到用户活动时跳过。
-5. 转换时设为模式 25，使用 `posix_spawn` 启动 `pmset sleepnow`，主运行循环继续处理通知与控制请求。
+4. 达到阈值后，合盖 DarkWake 路径通过动态能力状态立即检查：CPU on、Video off、明确合盖且供电符合范围才设置模式 25，让系统自然回睡，不调用 sleepnow。完整唤醒仍等待 25 秒并检查 HID 与用户唤醒原因。
+5. 手动或完整唤醒路径设为模式 25 后，使用 `posix_spawn` 启动 `pmset sleepnow`，主循环继续处理通知与控制请求。DarkWake 路径只修改下一次睡眠模式，状态显示为请求，须在恢复后核对实际模式。
 6. 唤醒后恢复模式 3，服务回到就绪状态。停用时恢复启用前的备份。
 
 系统可能自行更早进入深度休眠；模式值不是实时硬件状态。
+
+## 合盖后台唤醒
+
+传统 IORegisterForSystemPower 通知不覆盖所有 DarkWake，不能把“服务仍响应”视为“到期检查已执行”。PowerMonitor 用公开 SystemConfiguration API 订阅 `State:/IOKit/SystemPowerCapabilities`，同时每秒补查，避免短暂维护唤醒在 25 秒检查前结束。此状态键和 IOPMCapability 位来自 Apple 的 IOPMLibPrivate.h/电源管理源码，键本身属于未公开稳定性承诺的系统实现；不调用 IOPMConnection 私有入口。若状态不可读则不推测，服务页显示监听未确认。
+
+能力位使用 CPU=1、Video=2，不能混用 IORegistry 的 `System Capabilities`。合盖值来自 IOPMrootDomain 的 AppleClamshellState。下发前在非阻塞锁内再次核对能力、合盖、配置和供电；锁忙则下个 tick 重试。合盖路径没有强制 sleepnow，因此开盖竞争不会触发一次额外的强制睡眠。实际模式需恢复日志确认。
+
+参考：[Apple IOPMLibPrivate.h](https://github.com/apple-oss-distributions/IOKitUser/blob/main/pwr_mgt.subproj/IOPMLibPrivate.h)、[Apple IOPMrootDomain.cpp](https://github.com/apple-oss-distributions/xnu/blob/main/iokit/Kernel/IOPMrootDomain.cpp)。
 
 ## 不得破坏的约束
 

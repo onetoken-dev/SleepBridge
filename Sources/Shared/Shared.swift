@@ -16,7 +16,7 @@ let serviceID = "local.sleepbridge.helper"
 #else
     let supportPath = "/Library/Application Support/SleepBridge"
 #endif
-let helperProtocolVersion = "1.3"
+let helperProtocolVersion = "1.5"
 let helperGreeting = "OK SleepBridge \(helperProtocolVersion)"
 let installedHelper = supportPath + "/SleepBridgeHelper"
 let configPath = supportPath + "/config.json"
@@ -39,6 +39,7 @@ struct ServiceStatus: Codable {
     var sleepStart: Date?
     var scheduledWake: Date?
     var deepCycle = false
+    var darkWakeMonitoring: Bool?
     var updated = Date()
     var pid: Int32 = 0
 }
@@ -73,10 +74,14 @@ struct CommandResult { var code: Int32; var output: String }
     } catch { return CommandResult(code: -1, output: error.localizedDescription) }
 }
 func onBattery() -> Bool {
-    guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
-        let source = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue()
-    else { return false }
-    return (source as String) == kIOPSBatteryPowerValue
+    #if SLEEPBRIDGE_TESTING
+        return TestPowerEffects.battery
+    #else
+        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+            let source = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue()
+        else { return false }
+        return (source as String) == kIOPSBatteryPowerValue
+    #endif
 }
 func modes(from text: String) -> [String: Int] {
     var section = "", result: [String: Int] = [:]

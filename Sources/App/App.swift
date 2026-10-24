@@ -42,6 +42,7 @@ func appleString(_ value: String) -> String {
             Task { @MainActor in self?.refresh() }
         }
     }
+    var statusFresh: Bool { controlReady && Date().timeIntervalSince(status.updated) < 45 }
     var dirty: Bool { config.enabled && (minutes != config.minutes || scope != config.scope) }
     func refresh(logs: Bool = false) {
         guard !refreshing else { return }; refreshing = true
@@ -71,9 +72,6 @@ func appleString(_ value: String) -> String {
             self.running = values[3].contains("state = running")
             self.controlReady = values[6] == helperGreeting
             self.controlDetail = values[6]
-            if !self.controlReady && self.status.deepCycle {
-                self.message = "休眠请求后后台未响应；该状态尚未确认，请查看系统日志。"
-            }
             self.config = readJSON(configPath, as: Configuration.self) ?? Configuration()
             self.status = readJSON(statusPath, as: ServiceStatus.self) ?? ServiceStatus()
             self.events =
@@ -133,6 +131,15 @@ func appleString(_ value: String) -> String {
             + shellQuote("/Library/LaunchDaemons/" + serviceID + ".plist") + "\n"
         script += shellQuote(installedHelper) + " --configure \(delay) \(targetScope) \(getuid())\n"
         privileged(script, success: "后台服务和策略已更新。日常请求硬盘休眠无需重复输入管理员密码。")
+    }
+    func diagnose() {
+        guard !busy else { return }
+        busy = true
+        Task {
+            let result = await Task.detached { connectControl("diagnose") }.value
+            busy = false; error = result.code != 0; message = result.output
+            refresh(logs: true)
+        }
     }
     func disable() {
         privileged(shellQuote(installedHelper) + " --disable", success: "已停用策略并恢复启用前的休眠模式。")
@@ -315,9 +322,17 @@ struct ContentView: View {
                         )
                         .foregroundStyle(.secondary)
                         if model.config.enabled {
-                            Text(model.status.detail).font(.callout).foregroundStyle(.secondary)
+                            Text(
+                                model.statusFresh
+                                    ? model.status.detail
+                                    : "后台状态暂不可确认；最后记录于 "
+                                        + model.status.updated.formatted(
+                                            date: .abbreviated, time: .standard)
+                            ).font(.callout).foregroundStyle(.secondary)
                         }
-                        if let date = model.status.scheduledWake, model.config.enabled {
+                        if let date = model.status.scheduledWake, model.config.enabled,
+                            model.statusFresh, date > Date()
+                        {
                             Text("计划转换：\(date.formatted(date: .abbreviated, time: .standard))")
                                 .font(.callout.monospacedDigit())
                         }
@@ -326,7 +341,8 @@ struct ContentView: View {
                 }
                 if model.config.enabled && !model.controlReady {
                     HStack {
-                        Text("控制接口无响应，不能据此判断版本；请查看后台服务诊断。").font(.callout).foregroundStyle(.orange);
+                        Text("控制接口未就绪或协议不兼容。1.4.2 增加合盖后台唤醒转换；请安装新版后台。").font(.callout)
+                            .foregroundStyle(.orange);
                         Button("升级后台服务") { model.apply(repair: true) }.disabled(model.busy)
                     }
                 }
@@ -406,7 +422,7 @@ struct ContentView: View {
                     step("internaldrive", "请求硬盘休眠", "模式 25，再次睡眠")
                 }
                 Text(
-                    "M1 未提供可验证的原生延迟参数。本工具通过定时唤醒尝试转换，可能短暂亮屏，也可能因合盖、电源限制或系统调度而延迟／不执行。唤醒后会等待 25 秒；检测到近期输入或无法确认空闲时会跳过，避免打断使用。系统自身也可能更早进入深度休眠。"
+                    "本工具通过定时唤醒尝试转换。合盖且处于后台唤醒时，到期立即设置下一次睡眠为模式 25，让系统自然回睡；开盖完整唤醒时等待 25 秒检查活动。系统调度可能使转换延迟，实际休眠方式须在恢复后核对系统日志。"
                 ).font(.callout).foregroundStyle(.secondary)
                 Toggle("我了解定时唤醒方式及其限制，允许启用后台策略", isOn: $model.consent).toggleStyle(.checkbox)
             }
@@ -464,8 +480,14 @@ struct ContentView: View {
                 LabeledContent("运行", value: model.running ? "运行中" : "未运行")
                 LabeledContent("策略", value: model.config.enabled ? "已启用" : "已停用")
                 LabeledContent(
+                    "合盖后台唤醒监听",
+                    value: model.controlReady && model.status.darkWakeMonitoring == true
+                        ? "已就绪" : "未确认，请升级或查看诊断")
+                LabeledContent(
                     "免重复密码控制",
                     value: model.controlReady ? "已就绪（\(helperProtocolVersion)）" : "控制接口未就绪")
+                Button("诊断唤醒日志（不休眠）") { model.diagnose() }.disabled(
+                    !model.controlReady || model.busy)
                 if !model.controlReady {
                     Text(model.controlDetail).font(.caption).foregroundStyle(.orange).textSelection(
                         .enabled)

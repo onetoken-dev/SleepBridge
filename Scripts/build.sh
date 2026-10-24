@@ -9,7 +9,7 @@ APP="$DEST/SleepBridge.app"
 SLEEPBRIDGE_ARCH="${SLEEPBRIDGE_ARCH:-$(uname -m)}"
 COMMON=(-swift-version 5 -target "${SLEEPBRIDGE_ARCH}-apple-macos14.0" -O)
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$DEST/assets"
-xcrun swiftc "${COMMON[@]}" Sources/Shared/{Shared,Control,Spawn}.swift Sources/Helper/{ScheduledWake,Helper}.swift -o "$APP/Contents/Resources/SleepBridgeHelper" -framework IOKit
+xcrun swiftc "${COMMON[@]}" Sources/Shared/{Shared,Control,Spawn}.swift Sources/Helper/{CommandRunner,ScheduledWake,PowerMonitor,Helper}.swift -o "$APP/Contents/Resources/SleepBridgeHelper" -framework IOKit -framework SystemConfiguration
 xcrun swiftc "${COMMON[@]}" Sources/Shared/{Shared,Control}.swift Sources/History/History.swift Sources/App/{HistoryView,App}.swift -o "$APP/Contents/MacOS/SleepBridge" -framework SwiftUI -framework AppKit -framework IOKit -framework Charts
 xcrun swift Scripts/GenerateIcon.swift "$DEST/assets/SleepBridge.iconset"
 iconutil -c icns "$DEST/assets/SleepBridge.iconset" -o "$APP/Contents/Resources/SleepBridge.icns"
